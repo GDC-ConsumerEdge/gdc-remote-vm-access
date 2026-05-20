@@ -1,0 +1,9 @@
+{
+  "name": "cloudshell-vnc",
+  "version": "1.0.0",
+  "description": "Cloud Shell VNC for KubeVirt",
+  "main": "server.js",
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

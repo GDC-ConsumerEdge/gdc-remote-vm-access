@@ -1,0 +1,16 @@
+# Binaries
+virtctl
+VIRTCTL_VERSION.txt
+*.zip
+*.tar.gz
+
+# Dependencies
+node_modules/
+noVNC/
+
+# OS specific files
+.DS_Store
+.env
+
+# Docker
+.dockerignore
