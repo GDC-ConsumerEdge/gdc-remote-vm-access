@@ -33,10 +33,11 @@ graph TD
 
 You can run the tool as a container. This bundles all dependencies and only requires `docker` to be installed.
 
-### 1. Build the image
+### 1. Build and push the image
 ```bash
 export IMAGE_PATH=gcr.io/your-project-id/gdc-remote-vm-access
 docker build -t $IMAGE_PATH .
+docker push $IMAGE_PATH
 ```
 
 ### 2. Run the container
@@ -44,20 +45,22 @@ To allow the container to use your Cloud Shell identity, you must mount your `gc
 
 ```bash
 docker run -it --rm --init -p 8080:8080 \
+  -e GOOGLE_CLOUD_PROJECT \
   -v ~/.config/gcloud:/root/.config/gcloud \
-  $IMAGE_PATH \
-  $PROJECT_ID $CLUSTER_NAME $VM_NAME $NAMESPACE
+  $IMAGE_PATH
 ```
 
 **Note:** The container will automatically run `gcloud container fleet memberships get-credentials` using your mounted credentials.
 
-## Web Interface
+### Web Interface
 
-Once started (via script or Docker):
+Once started:
 - Click the **Web Preview** button (top right of Cloud Shell).
 - Select **Preview on port 8080**.
-- Your browser will open the noVNC interface.
-- Click **Connect** (or it might connect automatically).
+- The **Selection UI** will open, allowing you to choose your Cluster and VM.
+- Once a VM is selected, the VNC session will start.
+
+---
 
 ## Local Development
 
@@ -71,14 +74,9 @@ Once started (via script or Docker):
 
 ### Local Usage (Direct Script)
 
-1. Authenticate to your cluster:
+1. Start the VNC bridge:
    ```bash
-   gcloud container fleet memberships get-credentials $CLUSTER_NAME
-   ```
-
-2. Start the VNC bridge:
-   ```bash
-   ./start-vnc.sh <VM_NAME> [NAMESPACE]
+   ./start-vnc.sh
    ```
 
 ## Disclaimer
