@@ -1,31 +1,33 @@
-# Cloud Shell VNC for KubeVirt
+# GDC Remote VM Access
 
-This project allows you to access KubeVirt VM consoles via VNC directly from your browser using Google Cloud Shell. It uses `noVNC` and `a Node.js proxy server` to bridge the VNC connection to a web interface.
+This project allows you to access GDC VMRuntime (VMR) consoles via VNC directly from your browser using Google Cloud Shell. It uses `noVNC` and a Node.js proxy server to bridge the VNC connection to a web interface.
+
+## Architecture
+
+```mermaid
+graph TD
+    User([User Browser]) -- "HTTPS/WSS (Web Preview)" --> CS[Cloud Shell Proxy]
+    CS -- Port 8080 --> Node[Node.js Server]
+    
+    subgraph "Cloud Shell Instance / Container"
+        Node -- "Spawn / Manage" --> Virtctl[virtctl vnc process]
+        Node -- "Auth & Discovery" --> GCloud[gcloud / kubectl]
+        Node -- "WebSocket to TCP Bridge" --> Virtctl
+    end
+    
+    GCloud -- "List Clusters/VMs" --> GDC[Google APIs]
+    Virtctl -- "K8s API Tunnel" --> GDC
+    GDC -- "Console Access" --> VM[Target Virtual Machine]
+
+    style Node fill:#e1f5fe,stroke:#01579b
+    style Virtctl fill:#fff3e0,stroke:#e65100
+    style GDC fill:#e8f5e9,stroke:#1b5e20
+```
 
 ## Prerequisites
 
 - Access to a GDC connected cluster with KubeVirt.
 - `gcloud` and `kubectl` configured in Cloud Shell.
-
-## Setup
-
-1. Clone or copy these files to your Cloud Shell.
-2. Run the installation script:
-   ```bash
-   ./install.sh
-   ```
-
-## Usage (Direct Script)
-
-1. Authenticate to your cluster:
-   ```bash
-   gcloud container fleet memberships get-credentials $CLUSTER_NAME
-   ```
-
-2. Start the VNC bridge:
-   ```bash
-   ./start-vnc.sh <VM_NAME> [NAMESPACE]
-   ```
 
 ## Usage (Docker)
 
@@ -33,7 +35,8 @@ You can run the tool as a container. This bundles all dependencies and only requ
 
 ### 1. Build the image
 ```bash
-docker build -t gcr.io/gdc-images/cloudshell-vnc .
+export IMAGE_PATH=gcr.io/your-project-id/gdc-remote-vm-access
+docker build -t $IMAGE_PATH .
 ```
 
 ### 2. Run the container
@@ -42,7 +45,7 @@ To allow the container to use your Cloud Shell identity, you must mount your `gc
 ```bash
 docker run -it --rm --init -p 8080:8080 \
   -v ~/.config/gcloud:/root/.config/gcloud \
-  gcr.io/gdc-images/cloudshell-vnc \
+  $IMAGE_PATH \
   $PROJECT_ID $CLUSTER_NAME $VM_NAME $NAMESPACE
 ```
 
@@ -56,23 +59,30 @@ Once started (via script or Docker):
 - Your browser will open the noVNC interface.
 - Click **Connect** (or it might connect automatically).
 
-## One-Click Launch (Recommended)
+## Local Development
 
-You can launch this tool directly from a URL. This is ideal for integration with monitoring dashboards or IDPs.
+### Local Setup
 
-### 1. The Magic Link
-Replace the placeholders in the URL below:
+1. Clone or copy these files to your Cloud Shell.
+2. Run the installation script:
+   ```bash
+   ./install.sh
+   ```
 
-```text
-https://shell.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/YOUR_ORG/cloudshell-vnc&cloudshell_tutorial=cloudshell_tutorial.md&cloudshell_open_command=./launch.sh+PROJECT_ID+CLUSTER_NAME+VM_NAME+NAMESPACE
-```
+### Local Usage (Direct Script)
 
-### 2. How it works
-- **`cloudshell_git_repo`**: Automatically clones this repository.
-- **`cloudshell_tutorial`**: Opens a side panel guide.
-- **`cloudshell_open_command`**: Runs the `launch.sh` script automatically, which handles dependency installation and cluster authentication.
+1. Authenticate to your cluster:
+   ```bash
+   gcloud container fleet memberships get-credentials $CLUSTER_NAME
+   ```
 
-### 3. Manual Testing
-To test this manually, you can paste a URL like this into your browser (after replacing your specific details):
-`https://shell.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/YOUR_ORG/cloudshell-vnc&cloudshell_open_command=./launch.sh+my-project+my-cluster+my-vm+default`
-ll's Web Preview feature provides a secure HTTPS URL to access port 8080.
+2. Start the VNC bridge:
+   ```bash
+   ./start-vnc.sh <VM_NAME> [NAMESPACE]
+   ```
+
+## Disclaimer
+
+This project is not an official Google project. It is not supported by
+Google and Google specifically disclaims all warranties as to its quality,
+merchantability, or fitness for a particular purpose.

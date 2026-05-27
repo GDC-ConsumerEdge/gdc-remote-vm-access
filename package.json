@@ -1,7 +1,7 @@
 {
-  "name": "cloudshell-vnc",
+  "name": "gdc-remote-vm-access",
   "version": "1.0.0",
-  "description": "Cloud Shell VNC for KubeVirt",
+  "description": "GDC Remote VM Access",
   "main": "server.js",
   "dependencies": {
     "ws": "^8.16.0"

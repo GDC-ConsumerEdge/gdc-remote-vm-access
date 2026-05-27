@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# install.sh - Installs dependencies for Cloud Shell VNC
+# install.sh - Installs dependencies for GDC Remote VM Access
 
 set -e
 

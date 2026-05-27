@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GDC Remote VM Access</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-page: #f9fbfc;
+            --bg-card: #ffffff;
+            --primary: #1a73e8; /* Google Cloud Blue */
+            --primary-hover: #1765cc;
+            --text-main: #202124;
+            --text-secondary: #5f6368;
+            --border: #dadce0;
+            --status-success: #1e8e3e;
+            --status-error: #d93025;
+            --status-warn: #f9ab00;
+            --shadow: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+            --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            background-color: var(--bg-page);
+            color: var(--text-main);
+            font-family: var(--font);
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 640px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            transition: transform 0.2s ease;
+        }
+
+        header {
+            padding: 24px 32px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 500;
+            letter-spacing: -0.02em;
+        }
+
+        .step-indicator {
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .content {
+            padding: 32px;
+            min-height: 320px;
+        }
+
+        .step { display: none; }
+        .step.active { display: block; animation: fadeIn 0.3s ease-out; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .instruction {
+            margin: 0 0 24px 0;
+            color: var(--text-secondary);
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+        }
+
+        .list-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .list-item:last-child { border-bottom: none; }
+
+        .list-item:hover:not(.disabled) {
+            background-color: #f1f3f4;
+        }
+
+        .list-item.disabled {
+            cursor: not-allowed;
+            opacity: 0.6;
+            background-color: #f8f9fa;
+        }
+
+        .item-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .item-name {
+            font-weight: 500;
+            font-size: 15px;
+            color: var(--primary);
+        }
+
+        .list-item.disabled .item-name {
+            color: var(--text-secondary);
+        }
+
+        .status-pill {
+            font-size: 12px;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+        }
+
+        .status-pill::before {
+            content: "";
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-connected, .status-running {
+            color: var(--status-success);
+            background: #e6f4ea;
+        }
+        .status-connected::before, .status-running::before { background: var(--status-success); }
+
+        .status-disconnected {
+            color: var(--status-error);
+            background: #fce8e6;
+        }
+        .status-disconnected::before { background: var(--status-error); }
+
+        .status-other {
+            color: var(--status-warn);
+            background: #fef7e0;
+        }
+        .status-other::before { background: var(--status-warn); }
+
+        .loader-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 0;
+        }
+
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid rgba(26, 115, 232, 0.1);
+            border-top: 3px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .loading-msg {
+            margin-top: 16px;
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .footer-actions {
+            padding: 20px 32px;
+            background: #f8f9fa;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-start;
+        }
+
+        button.text-button {
+            background: transparent;
+            border: none;
+            color: var(--primary);
+            font-family: var(--font);
+            font-weight: 500;
+            font-size: 14px;
+            cursor: pointer;
+            padding: 8px 12px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+
+        button.text-button:hover {
+            background: rgba(26, 115, 232, 0.04);
+        }
+
+        /* Breadcrumbs */
+        .breadcrumbs {
+            display: flex;
+            align-items: center;
+            font-size: 13px;
+            margin-bottom: 24px;
+            color: var(--text-secondary);
+        }
+
+        .breadcrumb-sep { margin: 0 8px; color: var(--border); }
+        .breadcrumb-active { color: var(--text-main); font-weight: 500; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>GDC Remote VM Access</h1>
+            <div id="step-label" class="step-indicator">Step 1 of 2</div>
+        </header>
+
+        <div class="content">
+            <!-- Step 1: Cluster Selection -->
+            <div id="step1" class="step active">
+                <p class="instruction">Select a cluster to manage its virtual machine workloads.</p>
+                <div id="error-container" style="display:none; background: #fce8e6; border: 1px solid var(--status-error); color: var(--status-error); padding: 16px; border-radius: 6px; margin-bottom: 24px; font-size: 14px;">
+                    <div style="font-weight: 600; margin-bottom: 4px;">Configuration Error</div>
+                    <div id="error-message"></div>
+                </div>
+                <div id="cluster-loader" class="loader-container">
+                    <div class="spinner"></div>
+                    <div class="loading-msg">Fetching available clusters...</div>
+                </div>
+                <ul id="cluster-list" class="list"></ul>
+            </div>
+
+            <!-- Step 2: VM Selection -->
+            <div id="step2" class="step">
+                <div class="breadcrumbs">
+                    <span>Clusters</span>
+                    <span class="breadcrumb-sep">/</span>
+                    <span id="breadcrumb-cluster" class="breadcrumb-active"></span>
+                </div>
+                <p class="instruction">Choose a running virtual machine to establish a remote VNC session.</p>
+                <div id="vm-loader" class="loader-container" style="display:none;">
+                    <div class="spinner"></div>
+                    <div class="loading-msg">Retrieving virtual machines...</div>
+                </div>
+                <ul id="vm-list" class="list"></ul>
+            </div>
+
+            <!-- Step 3: Connecting -->
+            <div id="step3" class="step">
+                <div class="loader-container">
+                    <div class="spinner"></div>
+                    <div class="loading-msg" style="font-weight: 500; color: var(--text-main);">Initializing secure VNC bridge...</div>
+                    <p class="instruction" style="margin-top: 8px;">Target: <span id="target-vm-name"></span></p>
+                </div>
+            </div>
+        </div>
+
+        <div id="footer" class="footer-actions" style="display:none;">
+            <button class="text-button" onclick="showStep(1)">Back to Clusters</button>
+        </div>
+    </div>
+
+    <script>
+        let selectedCluster = null;
+
+        async function fetchClusters() {
+            document.getElementById('cluster-loader').style.display = 'flex';
+            document.getElementById('cluster-list').innerHTML = '';
+            document.getElementById('error-container').style.display = 'none';
+            document.getElementById('footer').style.display = 'none';
+            document.getElementById('step-label').innerText = 'Step 1 of 2';
+
+            try {
+                const response = await fetch('/api/clusters');
+                const data = await response.json();
+                
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || 'Failed to fetch clusters');
+                }
+
+                const list = document.getElementById('cluster-list');
+                const results = data.data.result;
+                results.forEach(res => {
+                    const clusterName = res.metric.cluster_name;
+                    const status = res.metric.status;
+                    const isConnected = status === 'CONNECTED';
+                    
+                    const li = document.createElement('li');
+                    li.className = 'list-item' + (!isConnected ? ' disabled' : '');
+                    li.innerHTML = `
+                        <div class="item-info">
+                            <span class="item-name">${clusterName}</span>
+                        </div>
+                        <span class="status-pill status-${status.toLowerCase()}">${status}</span>
+                    `;
+                    if (isConnected) {
+                        li.onclick = () => selectCluster(clusterName);
+                    }
+                    list.appendChild(li);
+                });
+            } catch (err) {
+                console.error('Cluster fetch error:', err);
+                document.getElementById('error-container').style.display = 'block';
+                document.getElementById('error-message').innerText = err.message;
+            } finally {
+                document.getElementById('cluster-loader').style.display = 'none';
+            }
+        }
+
+        async function selectCluster(name) {
+            selectedCluster = name;
+            document.getElementById('breadcrumb-cluster').innerText = name;
+            showStep(2);
+            fetchVMs(name);
+        }
+
+        async function fetchVMs(cluster) {
+            document.getElementById('vm-loader').style.display = 'flex';
+            document.getElementById('vm-list').innerHTML = '';
+            document.getElementById('step-label').innerText = 'Step 2 of 2';
+            document.getElementById('footer').style.display = 'flex';
+
+            try {
+                const response = await fetch(`/api/vms?cluster=${cluster}`);
+                const data = await response.json();
+                const list = document.getElementById('vm-list');
+                
+                const vms = data.items || [];
+                if (vms.length === 0) {
+                    list.innerHTML = '<li class="list-item disabled">No virtual machines found in this cluster.</li>';
+                }
+                vms.forEach(vm => {
+                    const name = vm.metadata.name;
+                    const status = vm.status && vm.status.state ? vm.status.state : 'Unknown';
+                    const isRunning = status === 'Running' || status === 'RUNNING';
+                    
+                    const li = document.createElement('li');
+                    li.className = 'list-item' + (!isRunning ? ' disabled' : '');
+                    li.innerHTML = `
+                        <div class="item-info">
+                            <span class="item-name">${name}</span>
+                        </div>
+                        <span class="status-pill status-${isRunning ? 'running' : 'other'}">${status}</span>
+                    `;
+                    if (isRunning) {
+                        li.onclick = () => connectToVM(name, vm.metadata.namespace);
+                    }
+                    list.appendChild(li);
+                });
+            } catch (err) {
+                console.error('VM fetch error:', err);
+            } finally {
+                document.getElementById('vm-loader').style.display = 'none';
+            }
+        }
+
+        async function connectToVM(vm, namespace) {
+            document.getElementById('target-vm-name').innerText = vm;
+            document.getElementById('footer').style.display = 'none';
+            showStep(3);
+            try {
+                const response = await fetch('/api/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ vm, namespace })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    window.location.href = '/vnc.html?autoconnect=true&reconnect=true';
+                } else {
+                    alert('Failed to connect: ' + (data.error || 'Unknown error'));
+                    showStep(2);
+                }
+            } catch (err) {
+                alert('Connection error: ' + err);
+                showStep(2);
+            }
+        }
+
+        function showStep(n) {
+            document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+            document.getElementById('step' + n).classList.add('active');
+            if (n === 1) document.getElementById('footer').style.display = 'none';
+        }
+
+        async function init() {
+            try {
+                const res = await fetch('/api/status');
+                const status = await res.json();
+                if (status.connected) {
+                    window.location.href = '/vnc.html?autoconnect=true&reconnect=true';
+                    return;
+                }
+            } catch (e) {}
+            fetchClusters();
+        }
+
+        init();
+    </script>
+</body>
+</html>

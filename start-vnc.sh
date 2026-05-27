@@ -8,41 +8,34 @@ NAMESPACE=$2
 PORT=8080
 VNC_PORT=5900
 
-if [ -z "$VM_NAME" ]; then
-    echo "Usage: $0 <vm-name> [namespace]"
-    exit 1
+if [ -n "$VM_NAME" ]; then
+    if [ -z "$NAMESPACE" ]; then
+        NAMESPACE=$(kubectl config view --minify -o jsonpath='{..namespace}' 2>/dev/null)
+        NAMESPACE=${NAMESPACE:-default}
+        echo "Using namespace: $NAMESPACE"
+    fi
+
+    # Check if virtctl exists
+    if [ ! -f "./virtctl" ]; then
+        echo "virtctl not found. Please run install.sh first."
+        exit 1
+    fi
+
+    # Kill any existing processes
+    echo "Cleaning up existing VNC/websockify processes..."
+    pkill -f "virtctl vnc" || true
+    pkill -f "websockify" || true
+
+    # Start virtctl vnc proxy in background
+    echo "Starting virtctl vnc proxy for VM '$VM_NAME' in namespace '$NAMESPACE'..."
+    ./virtctl vnc "$VM_NAME" -n "$NAMESPACE" --port $VNC_PORT --proxy-only &
+    VIRT_PID=$!
+
+    # Cleanup on exit
+    trap "kill $VIRT_PID 2>/dev/null" EXIT
+else
+    echo "No VM name provided. Skipping VNC proxy startup."
 fi
-
-if [ -z "$NAMESPACE" ]; then
-    NAMESPACE=$(kubectl config view --minify -o jsonpath='{..namespace}' 2>/dev/null)
-    NAMESPACE=${NAMESPACE:-default}
-    echo "Using namespace: $NAMESPACE"
-fi
-
-# Check if virtctl exists
-if [ ! -f "./virtctl" ]; then
-    echo "virtctl not found. Please run install.sh first."
-    exit 1
-fi
-
-# Check if ws exists
-if [ ! -d "./node_modules/ws" ]; then
-    echo "ws module not found. Please run install.sh first."
-    exit 1
-fi
-
-# Kill any existing processes
-echo "Cleaning up existing VNC/websockify processes..."
-pkill -f "virtctl vnc" || true
-pkill -f "websockify" || true
-
-# Start virtctl vnc proxy in background
-echo "Starting virtctl vnc proxy for VM '$VM_NAME' in namespace '$NAMESPACE'..."
-./virtctl vnc "$VM_NAME" -n "$NAMESPACE" --port $VNC_PORT --proxy-only &
-VIRT_PID=$!
-
-# Cleanup on exit
-trap "kill $VIRT_PID 2>/dev/null" EXIT
 
 # Start server.js
 # It will serve noVNC files from ./noVNC and proxy WS to localhost:VNC_PORT
