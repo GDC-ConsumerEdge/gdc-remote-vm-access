@@ -232,6 +232,124 @@
 
         .breadcrumb-sep { margin: 0 8px; color: var(--border); }
         .breadcrumb-active { color: var(--text-main); font-weight: 500; }
+
+        .search-container {
+            margin-bottom: 16px;
+            position: relative;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 10px 14px 10px 36px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--font);
+            font-size: 14px;
+            color: var(--text-main);
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .search-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-secondary);
+            pointer-events: none;
+        }
+
+        .pagination-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+            font-size: 13px;
+            color: var(--text-secondary);
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .page-size-selector {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .page-size-select {
+            padding: 4px 8px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            font-family: var(--font);
+            font-size: 13px;
+            color: var(--text-main);
+            background-color: #fff;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .page-size-select:focus {
+            border-color: var(--primary);
+        }
+
+        .pagination-buttons {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .page-button {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-family: var(--font);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-main);
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+
+        .page-button:hover:not(:disabled) {
+            background-color: #f1f3f4;
+            border-color: #bdc1c6;
+        }
+
+        .page-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background-color: #f8f9fa;
+        }
+
+        .page-count {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-main);
+        }
+
+        .list-item.no-results {
+            justify-content: center;
+            color: var(--text-secondary);
+            cursor: default;
+        }
+
+        .list-item.no-results:hover {
+            background-color: transparent;
+        }
     </style>
 </head>
 <body>
@@ -253,7 +371,35 @@
                     <div class="spinner"></div>
                     <div class="loading-msg">Fetching available clusters...</div>
                 </div>
-                <ul id="cluster-list" class="list"></ul>
+                <div id="cluster-content" style="display: none;">
+                    <div class="search-container">
+                        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                        </svg>
+                        <input type="text" id="cluster-search" class="search-input" placeholder="Search clusters by name..." oninput="handleClusterSearch(this.value)">
+                    </div>
+                    <ul id="cluster-list" class="list"></ul>
+                    <div id="cluster-pagination" class="pagination-container">
+                        <div class="pagination-info">
+                            <span id="cluster-range-info">Showing 0-0 of 0 clusters</span>
+                            <div class="page-size-selector">
+                                <label for="cluster-page-size">Per page:</label>
+                                <select id="cluster-page-size" class="page-size-select" onchange="handlePageSizeChange(this.value)">
+                                    <option value="10">10</option>
+                                    <option value="25">25</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="pagination-buttons">
+                            <button id="cluster-prev-btn" class="page-button" onclick="changeClusterPage(-1)">Previous</button>
+                            <span id="cluster-page-count" class="page-count">Page 1 of 1</span>
+                            <button id="cluster-next-btn" class="page-button" onclick="changeClusterPage(1)">Next</button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Step 2: VM Selection -->
@@ -288,10 +434,14 @@
 
     <script>
         let selectedCluster = null;
+        let allClusters = [];
+        let clusterSearchQuery = '';
+        let currentClusterPage = 1;
+        let clusterPageSize = 10;
 
         async function fetchClusters() {
             document.getElementById('cluster-loader').style.display = 'flex';
-            document.getElementById('cluster-list').innerHTML = '';
+            document.getElementById('cluster-content').style.display = 'none';
             document.getElementById('error-container').style.display = 'none';
             document.getElementById('footer').style.display = 'none';
             document.getElementById('step-label').innerText = 'Step 1 of 2';
@@ -304,33 +454,111 @@
                     throw new Error(data.error || 'Failed to fetch clusters');
                 }
 
-                const list = document.getElementById('cluster-list');
-                const results = data.data.result;
-                results.forEach(res => {
-                    const clusterName = res.metric.cluster_name;
-                    const status = res.metric.status;
-                    const isConnected = status === 'CONNECTED';
-                    
-                    const li = document.createElement('li');
-                    li.className = 'list-item' + (!isConnected ? ' disabled' : '');
-                    li.innerHTML = `
-                        <div class="item-info">
-                            <span class="item-name">${clusterName}</span>
-                        </div>
-                        <span class="status-pill status-${status.toLowerCase()}">${status}</span>
-                    `;
-                    if (isConnected) {
-                        li.onclick = () => selectCluster(clusterName);
-                    }
-                    list.appendChild(li);
-                });
+                const results = (data && data.data && data.data.result) ? data.data.result : [];
+                allClusters = results.map(res => ({
+                    name: res.metric ? res.metric.cluster_name : 'Unknown Cluster',
+                    status: res.metric ? res.metric.status : 'UNKNOWN'
+                }));
+
+                allClusters.sort((a, b) => a.name.localeCompare(b.name));
+
+                clusterSearchQuery = '';
+                currentClusterPage = 1;
+                const searchInput = document.getElementById('cluster-search');
+                if (searchInput) searchInput.value = '';
+
+                document.getElementById('cluster-loader').style.display = 'none';
+                document.getElementById('cluster-content').style.display = 'block';
+                renderClusterList();
             } catch (err) {
                 console.error('Cluster fetch error:', err);
                 document.getElementById('error-container').style.display = 'block';
                 document.getElementById('error-message').innerText = err.message;
-            } finally {
                 document.getElementById('cluster-loader').style.display = 'none';
             }
+        }
+
+        function handleClusterSearch(value) {
+            clusterSearchQuery = value;
+            currentClusterPage = 1;
+            renderClusterList();
+        }
+
+        function handlePageSizeChange(size) {
+            clusterPageSize = parseInt(size, 10) || 10;
+            currentClusterPage = 1;
+            renderClusterList();
+        }
+
+        function changeClusterPage(delta) {
+            currentClusterPage += delta;
+            renderClusterList();
+        }
+
+        function renderClusterList() {
+            const list = document.getElementById('cluster-list');
+            list.innerHTML = '';
+
+            const query = clusterSearchQuery.trim().toLowerCase();
+            const filtered = allClusters.filter(cluster => 
+                cluster.name.toLowerCase().includes(query)
+            );
+
+            const totalClusters = filtered.length;
+            const totalPages = Math.ceil(totalClusters / clusterPageSize) || 1;
+
+            if (currentClusterPage > totalPages) {
+                currentClusterPage = totalPages;
+            }
+            if (currentClusterPage < 1) {
+                currentClusterPage = 1;
+            }
+
+            const startIndex = (currentClusterPage - 1) * clusterPageSize;
+            const endIndex = Math.min(startIndex + clusterPageSize, totalClusters);
+            const pageItems = filtered.slice(startIndex, endIndex);
+
+            if (pageItems.length === 0) {
+                const li = document.createElement('li');
+                li.className = 'list-item disabled no-results';
+                li.innerText = totalClusters === 0 && query !== '' 
+                    ? `No clusters matching "${clusterSearchQuery}"` 
+                    : 'No clusters found.';
+                list.appendChild(li);
+            } else {
+                pageItems.forEach(cluster => {
+                    const isConnected = cluster.status === 'CONNECTED';
+                    const li = document.createElement('li');
+                    li.className = 'list-item' + (!isConnected ? ' disabled' : '');
+                    li.innerHTML = `
+                        <div class="item-info">
+                            <span class="item-name">${cluster.name}</span>
+                        </div>
+                        <span class="status-pill status-${cluster.status.toLowerCase()}">${cluster.status}</span>
+                    `;
+                    if (isConnected) {
+                        li.onclick = () => selectCluster(cluster.name);
+                    }
+                    list.appendChild(li);
+                });
+            }
+
+            const rangeInfo = document.getElementById('cluster-range-info');
+            if (totalClusters === 0) {
+                rangeInfo.innerText = 'Showing 0-0 of 0 clusters';
+            } else {
+                rangeInfo.innerText = `Showing ${startIndex + 1}-${endIndex} of ${totalClusters} cluster${totalClusters !== 1 ? 's' : ''}`;
+            }
+
+            const pageCount = document.getElementById('cluster-page-count');
+            if (pageCount) {
+                pageCount.innerText = `Page ${currentClusterPage} of ${totalPages}`;
+            }
+
+            const prevBtn = document.getElementById('cluster-prev-btn');
+            const nextBtn = document.getElementById('cluster-next-btn');
+            if (prevBtn) prevBtn.disabled = currentClusterPage <= 1;
+            if (nextBtn) nextBtn.disabled = currentClusterPage >= totalPages;
         }
 
         async function selectCluster(name) {
