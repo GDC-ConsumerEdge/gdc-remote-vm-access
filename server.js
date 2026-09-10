@@ -6,7 +6,7 @@ const url = require('url');
 const { exec, spawn } = require('child_process');
 const WebSocket = require('ws');
 
-const PORT = process.env.PORT || 8080;
+const PORT = parseInt(process.env.PORT || '8080', 10);
 const WEB_ROOT = path.join(__dirname, 'noVNC');
 const TARGET_HOST = '127.0.0.1';
 const TARGET_PORT = 5900;
@@ -14,11 +14,20 @@ const TARGET_PORT = 5900;
 let virtctlProcess = null;
 let currentVM = null;
 
+// Global process error handlers to prevent unhandled errors from terminating the server and breaking HTTP/2 streams
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const MIME_TYPES = {
-    '.html': 'text/html',
-    '.js': 'application/javascript',
-    '.css': 'text/css',
-    '.json': 'application/json',
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
     '.gif': 'image/gif',
@@ -50,7 +59,140 @@ async function getProjectId() {
     return project_id;
 }
 
+function findVirtctl() {
+    const candidates = [
+        path.join(__dirname, 'virtctl'),
+        './virtctl',
+        '/app/virtctl',
+        '/usr/local/bin/virtctl'
+    ];
+    for (const p of candidates) {
+        if (fs.existsSync(p)) {
+            return p;
+        }
+    }
+    return 'virtctl';
+}
+
+function sendJson(res, statusCode, data) {
+    const payload = JSON.stringify(data);
+    const buf = Buffer.from(payload, 'utf8');
+    res.writeHead(statusCode, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': buf.length,
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Connection': 'keep-alive'
+    });
+    res.end(buf);
+}
+
+function sendJsonString(res, statusCode, jsonString) {
+    const buf = Buffer.from(jsonString, 'utf8');
+    res.writeHead(statusCode, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': buf.length,
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Connection': 'keep-alive'
+    });
+    res.end(buf);
+}
+
+function sendText(res, statusCode, text, contentType = 'text/plain; charset=utf-8') {
+    const buf = Buffer.from(text, 'utf8');
+    res.writeHead(statusCode, {
+        'Content-Type': contentType,
+        'Content-Length': buf.length,
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Connection': 'keep-alive'
+    });
+    res.end(buf);
+}
+
+function isPortOpen(port, host, timeoutMs = 500) {
+    return new Promise((resolve) => {
+        const sock = new net.Socket();
+        sock.setTimeout(timeoutMs);
+        sock.on('connect', () => {
+            sock.destroy();
+            resolve(true);
+        });
+        sock.on('error', () => {
+            sock.destroy();
+            resolve(false);
+        });
+        sock.on('timeout', () => {
+            sock.destroy();
+            resolve(false);
+        });
+        try {
+            sock.connect(port, host);
+        } catch (e) {
+            sock.destroy();
+            resolve(false);
+        }
+    });
+}
+
+function waitForPort(port, host, timeoutMs = 30000, intervalMs = 500, getStderr = () => '') {
+    return new Promise((resolve, reject) => {
+        const startTime = Date.now();
+
+        const check = () => {
+            if (virtctlProcess && virtctlProcess.exitCode !== null && virtctlProcess.exitCode !== 0) {
+                const stderr = getStderr();
+                return reject(new Error(`virtctl process exited with code ${virtctlProcess.exitCode}.${stderr ? ' Error: ' + stderr : ''}`));
+            }
+
+            const socket = new net.Socket();
+            let destroyed = false;
+            const cleanup = () => {
+                if (!destroyed) {
+                    destroyed = true;
+                    socket.destroy();
+                }
+            };
+
+            socket.setTimeout(1000);
+            socket.on('connect', () => {
+                cleanup();
+                resolve();
+            });
+            socket.on('error', () => {
+                cleanup();
+                retry();
+            });
+            socket.on('timeout', () => {
+                cleanup();
+                retry();
+            });
+
+            try {
+                socket.connect(port, host);
+            } catch (err) {
+                cleanup();
+                retry();
+            }
+        };
+
+        const retry = () => {
+            if (Date.now() - startTime >= timeoutMs) {
+                const stderr = getStderr();
+                return reject(new Error(`Timed out after ${timeoutMs / 1000}s waiting for VNC port ${port} to open.${stderr ? ' virtctl error: ' + stderr : ''}`));
+            }
+            setTimeout(check, intervalMs);
+        };
+
+        check();
+    });
+}
+
 const server = http.createServer(async (req, res) => {
+    res.setHeader('Connection', 'keep-alive');
+
     const parsedUrl = url.parse(req.url, true);
     let pathname = parsedUrl.pathname;
 
@@ -71,11 +213,10 @@ const server = http.createServer(async (req, res) => {
                 body: new URLSearchParams({ query })
             });
             const data = await response.json();
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(data));
+            sendJson(res, 200, data);
         } catch (err) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: err.toString() }));
+            console.error('Error fetching clusters:', err);
+            sendJson(res, 500, { error: err.toString() });
         }
         return;
     }
@@ -84,18 +225,18 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/vms') {
         const cluster = parsedUrl.query.cluster;
         if (!cluster) {
-            res.writeHead(400); res.end('Missing cluster parameter'); return;
+            sendJson(res, 400, { error: 'Missing cluster parameter' });
+            return;
         }
         try {
             const project_id = await getProjectId();
             console.log(`Getting credentials for cluster: ${cluster} in project: ${project_id}`);
             await execPromise(`gcloud container fleet memberships get-credentials ${cluster} --project ${project_id} --quiet`);
             const vmsJson = await execPromise('kubectl get gvm -n vm-workloads -o json');
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(vmsJson);
+            sendJsonString(res, 200, vmsJson);
         } catch (err) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: err.toString() }));
+            console.error(`Error fetching VMs for cluster ${cluster}:`, err);
+            sendJson(res, 500, { error: err.toString() });
         }
         return;
     }
@@ -106,30 +247,46 @@ const server = http.createServer(async (req, res) => {
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const { vm, namespace } = JSON.parse(body);
+                const { vm, namespace } = JSON.parse(body || '{}');
                 if (!vm || !namespace) {
-                    res.writeHead(400); res.end('Missing vm or namespace'); return;
+                    sendJson(res, 400, { success: false, error: 'Missing vm or namespace' });
+                    return;
                 }
 
                 if (virtctlProcess) {
                     console.log('Killing existing virtctl process...');
-                    virtctlProcess.kill();
+                    try { virtctlProcess.kill('SIGTERM'); } catch (e) {}
+                    virtctlProcess = null;
                 }
 
-                console.log(`Starting virtctl vnc for ${vm} in ${namespace}...`);
-                virtctlProcess = spawn('./virtctl', ['vnc', vm, '-n', namespace, '--port', TARGET_PORT, '--proxy-only']);
+                const virtctlBin = findVirtctl();
+                console.log(`Starting virtctl vnc using "${virtctlBin}" for ${vm} in ${namespace}...`);
+                virtctlProcess = spawn(virtctlBin, ['vnc', vm, '-n', namespace, '--port', String(TARGET_PORT), '--proxy-only']);
                 currentVM = { vm, namespace };
 
+                let virtctlStderr = '';
                 virtctlProcess.stdout.on('data', (data) => console.log(`virtctl: ${data}`));
-                virtctlProcess.stderr.on('data', (data) => console.error(`virtctl error: ${data}`));
+                virtctlProcess.stderr.on('data', (data) => {
+                    const msg = data.toString();
+                    console.error(`virtctl error: ${msg}`);
+                    virtctlStderr += msg;
+                });
+                virtctlProcess.on('error', (err) => {
+                    console.error(`virtctl failed to spawn: ${err.message}`);
+                });
+                virtctlProcess.on('exit', (code, signal) => {
+                    console.log(`virtctl process exited with code ${code}, signal ${signal}`);
+                });
 
-                // Wait a bit for the proxy to start
-                setTimeout(() => {
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ success: true }));
-                }, 2000);
+                // Wait for the VNC port to actually be open and listening before responding
+                console.log(`Waiting for VNC port ${TARGET_PORT} to become available...`);
+                await waitForPort(TARGET_PORT, TARGET_HOST, 30000, 500, () => virtctlStderr);
+                console.log(`VNC port ${TARGET_PORT} is open and ready.`);
+
+                sendJson(res, 200, { success: true });
             } catch (err) {
-                res.writeHead(500); res.end(JSON.stringify({ error: err.toString() }));
+                console.error(`Error connecting to VM: ${err.message || err}`);
+                sendJson(res, 500, { success: false, error: err.message || err.toString() });
             }
         });
         return;
@@ -139,105 +296,175 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/disconnect' && req.method === 'POST') {
         if (virtctlProcess) {
             console.log('Disconnecting: Killing virtctl process...');
-            virtctlProcess.kill();
+            try { virtctlProcess.kill('SIGTERM'); } catch (e) {}
             virtctlProcess = null;
             currentVM = null;
         }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
+        sendJson(res, 200, { success: true });
         return;
     }
 
     // API: Get current status
     if (pathname === '/api/status') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ 
-            connected: !!virtctlProcess, 
-            vm: currentVM 
-        }));
+        const portOpen = await isPortOpen(TARGET_PORT, TARGET_HOST);
+        const isConnected = (!!virtctlProcess && virtctlProcess.exitCode === null) || portOpen;
+        sendJson(res, 200, { 
+            connected: isConnected, 
+            vm: currentVM || (portOpen ? { vm: process.env.VM_NAME || 'active-session', namespace: process.env.NAMESPACE || 'default' } : null)
+        });
         return;
     }
 
     // Serve selection UI or noVNC
     if (pathname === '/') pathname = '/selection.html';
 
-    let filename = path.join(__dirname, pathname);
+    const safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
+    let filename = path.join(__dirname, safePath);
     if (!fs.existsSync(filename)) {
-        filename = path.join(WEB_ROOT, pathname);
+        filename = path.join(WEB_ROOT, safePath);
     }
 
-    fs.exists(filename, (exists) => {
-        if (!exists || fs.statSync(filename).isDirectory()) {
-            res.writeHead(404, { 'Content-Type': 'text/plain' });
-            res.end('404 Not Found');
+    try {
+        if (!fs.existsSync(filename)) {
+            sendText(res, 404, '404 Not Found');
+            return;
+        }
+
+        const stat = fs.statSync(filename);
+        if (stat.isDirectory()) {
+            sendText(res, 404, '404 Not Found');
             return;
         }
 
         const ext = path.extname(filename).toLowerCase();
         const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+        const content = fs.readFileSync(filename);
 
-        fs.readFile(filename, (err, content) => {
-            if (err) {
-                res.writeHead(500, { 'Content-Type': 'text/plain' });
-                res.end('500 Internal Server Error');
-            } else {
-                res.writeHead(200, { 'Content-Type': contentType });
-                res.end(content);
-            }
+        res.writeHead(200, {
+            'Content-Type': contentType,
+            'Content-Length': content.length,
+            'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+            'Connection': 'keep-alive'
         });
+        res.end(content);
+    } catch (err) {
+        console.error(`Error serving file ${filename}:`, err);
+        sendText(res, 500, '500 Internal Server Error');
+    }
+});
+
+// Configure timeouts for Google Front End (GFE) / Cloud Shell Web Preview reverse proxy.
+// GFE idle keep-alive timeout is ~60s; backend keepAliveTimeout must exceed it to avoid ERR_HTTP2_PROTOCOL_ERROR
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+
+const wss = new WebSocket.Server({
+    noServer: true,
+    handleProtocols: (protocols) => {
+        if (protocols.has('binary')) return 'binary';
+        if (protocols.size > 0) return Array.from(protocols)[0];
+        return false;
+    }
+});
+
+server.on('upgrade', (request, socket, head) => {
+    socket.on('error', (err) => {
+        console.error('Socket error during HTTP upgrade:', err.message);
+    });
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
     });
 });
 
-const wss = new WebSocket.Server({ server });
-
 wss.on('connection', (ws, req) => {
-    console.log(`WebSocket connection from ${req.socket.remoteAddress}`);
-    
-    const target = net.createConnection(TARGET_PORT, TARGET_HOST, () => {
-        console.log('Connected to target VNC server');
-    });
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    console.log(`WebSocket connection established from ${clientIp}`);
 
-    target.on('data', (data) => {
-        try {
-            ws.send(data, { binary: true });
-        } catch (e) {
-            console.error('Error sending to WS:', e);
-            target.end();
+    let target = null;
+    let isClosed = false;
+    const pendingClientMessages = [];
+
+    const cleanup = () => {
+        if (isClosed) return;
+        isClosed = true;
+        if (target) {
+            target.removeAllListeners();
+            target.destroy();
+            target = null;
+        }
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            try {
+                ws.close(1000, 'Session terminated');
+            } catch (e) {}
+        }
+    };
+
+    target = net.createConnection(TARGET_PORT, TARGET_HOST, () => {
+        console.log(`Connected to target VNC server at ${TARGET_HOST}:${TARGET_PORT}`);
+        while (pendingClientMessages.length > 0 && target && target.writable) {
+            const msg = pendingClientMessages.shift();
+            target.write(msg);
         }
     });
 
-    ws.on('message', (msg) => {
-        target.write(msg);
+    target.on('data', (data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+            try {
+                ws.send(data, { binary: true });
+            } catch (e) {
+                console.error('Error sending to WS:', e.message);
+                cleanup();
+            }
+        }
     });
 
     target.on('end', () => {
-        console.log('Target disconnected');
-        ws.close();
+        console.log('Target VNC server disconnected (EOF)');
+        cleanup();
     });
 
     target.on('error', (err) => {
-        console.error('Target connection error:', err);
-        target.end();
-        ws.close();
+        console.error('Target VNC connection error:', err.message);
+        if (ws.readyState === WebSocket.OPEN) {
+            try {
+                ws.close(1011, 'VNC target connection error');
+            } catch (e) {}
+        }
+        cleanup();
     });
 
-    ws.on('close', () => {
-        console.log('WebSocket client disconnected');
-        target.end();
+    target.on('close', () => {
+        console.log('Target VNC socket closed');
+        cleanup();
+    });
+
+    ws.on('message', (msg) => {
+        if (target && target.writable && target.readyState === 'open') {
+            target.write(msg);
+        } else if (!isClosed) {
+            pendingClientMessages.push(msg);
+        }
+    });
+
+    ws.on('close', (code, reason) => {
+        console.log(`WebSocket client disconnected (code: ${code}, reason: ${reason ? reason.toString() : 'none'})`);
+        cleanup();
     });
 
     ws.on('error', (err) => {
-        console.error('WebSocket error:', err);
-        target.end();
+        console.error('WebSocket client error:', err.message);
+        cleanup();
     });
 });
 
-server.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on 0.0.0.0:${PORT}`);
     console.log(`Proxying WebSockets to ${TARGET_HOST}:${TARGET_PORT}`);
+    console.log('Keep-alive timeouts: keepAliveTimeout=65s, headersTimeout=66s');
     console.log('\x1b[32m%s\x1b[0m', '-------------------------------------------------------');
     console.log('\x1b[32m%s\x1b[0m', 'To access the selection page or VNC session:');
-    console.log('\x1b[32m%s\x1b[0m', 'Click "Web Preview" in Cloud Shell and select "Preview on port 8080"');
+    console.log('\x1b[32m%s\x1b[0m', `Click "Web Preview" in Cloud Shell and select "Preview on port ${PORT}"`);
     console.log('\x1b[32m%s\x1b[0m', '-------------------------------------------------------');
 });
 

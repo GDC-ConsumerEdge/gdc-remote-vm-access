@@ -1,6 +1,6 @@
 FROM google/cloud-sdk:slim
 
-RUN apt-get update && apt-get install -y git curl procps google-cloud-sdk-gke-gcloud-auth-plugin xz-utils && \
+RUN apt-get update && apt-get install -y git curl procps google-cloud-cli-gke-gcloud-auth-plugin xz-utils && \
     curl -LO "https://nodejs.org/dist/v20.14.0/node-v20.14.0-linux-x64.tar.xz" && \
     echo "fedf8fa73b6f51c4ffcc5da8f86cd1ed381bc9dceae0829832c7d683a78b8e36  node-v20.14.0-linux-x64.tar.xz" | sha256sum -c - && \
     tar -xJf node-v20.14.0-linux-x64.tar.xz -C /usr/local --strip-components=1 --no-same-owner && \
