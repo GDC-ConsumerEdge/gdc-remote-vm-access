@@ -641,7 +641,7 @@
             try {
                 const res = await fetch('/api/status');
                 const status = await res.json();
-                if (status.connected) {
+                if (status.connected && status.vm) {
                     window.location.href = '/vnc.html?autoconnect=true&reconnect=true';
                     return;
                 }

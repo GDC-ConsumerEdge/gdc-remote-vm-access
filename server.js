@@ -168,12 +168,16 @@ async function isVirtctlRunning() {
     if (virtctlProcess && virtctlProcess.exitCode === null && !virtctlProcess.killed) {
         return true;
     }
-    try {
-        const pids = await execPromise('pgrep -f "virtctl vnc"');
-        return pids.trim().length > 0;
-    } catch {
-        return false;
+    // Only check for an external process if direct mode was configured via environment
+    if (process.env.VM_NAME) {
+        try {
+            const pids = await execPromise('pgrep -x virtctl');
+            return pids.trim().length > 0;
+        } catch {
+            return false;
+        }
     }
+    return false;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -294,6 +298,10 @@ const server = http.createServer(async (req, res) => {
             try { virtctlProcess.kill('SIGTERM'); } catch (e) {}
             virtctlProcess = null;
             currentVM = null;
+        }
+        if (process.env.VM_NAME) {
+            try { await execPromise('pkill -x virtctl'); } catch (e) {}
+            delete process.env.VM_NAME;
         }
         sendJson(res, 200, { success: true });
         return;
