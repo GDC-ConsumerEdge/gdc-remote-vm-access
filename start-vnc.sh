@@ -5,7 +5,7 @@
 
 VM_NAME=$1
 NAMESPACE=$2
-PORT=8080
+PORT=${PORT:-8080}
 VNC_PORT=5900
 
 if [ -n "$VM_NAME" ]; then
@@ -16,9 +16,18 @@ if [ -n "$VM_NAME" ]; then
     fi
 
     # Check if virtctl exists
-    if [ ! -f "./virtctl" ]; then
-        echo "virtctl not found. Please run install.sh first."
-        exit 1
+    VIRTCTL_BIN="./virtctl"
+    if [ ! -f "$VIRTCTL_BIN" ]; then
+        if command -v virtctl >/dev/null 2>&1; then
+            VIRTCTL_BIN=$(command -v virtctl)
+        elif [ -f "/app/virtctl" ]; then
+            VIRTCTL_BIN="/app/virtctl"
+        elif [ -f "/usr/local/bin/virtctl" ]; then
+            VIRTCTL_BIN="/usr/local/bin/virtctl"
+        else
+            echo "virtctl not found. Please run install.sh first."
+            exit 1
+        fi
     fi
 
     # Kill any existing processes
@@ -27,12 +36,15 @@ if [ -n "$VM_NAME" ]; then
     pkill -f "websockify" || true
 
     # Start virtctl vnc proxy in background
-    echo "Starting virtctl vnc proxy for VM '$VM_NAME' in namespace '$NAMESPACE'..."
-    ./virtctl vnc "$VM_NAME" -n "$NAMESPACE" --port $VNC_PORT --proxy-only &
+    echo "Starting virtctl vnc proxy for VM '$VM_NAME' in namespace '$NAMESPACE' using $VIRTCTL_BIN..."
+    "$VIRTCTL_BIN" vnc "$VM_NAME" -n "$NAMESPACE" --port $VNC_PORT --proxy-only &
     VIRT_PID=$!
 
     # Cleanup on exit
     trap "kill $VIRT_PID 2>/dev/null" EXIT
+
+    export VM_NAME="$VM_NAME"
+    export NAMESPACE="$NAMESPACE"
 else
     echo "No VM name provided. Skipping VNC proxy startup."
 fi
