@@ -597,7 +597,7 @@
                         <span class="status-pill status-${isRunning ? 'running' : 'other'}">${status}</span>
                     `;
                     if (isRunning) {
-                        li.onclick = () => connectToVM(name, vm.metadata.namespace);
+                        li.onclick = () => connectToVM(name, (vm.metadata && vm.metadata.namespace) ? vm.metadata.namespace : 'vm-workloads');
                     }
                     list.appendChild(li);
                 });
@@ -616,7 +616,7 @@
                 const response = await fetch('/api/connect', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ vm, namespace })
+                    body: JSON.stringify({ vm, namespace: namespace || 'vm-workloads', cluster: selectedCluster })
                 });
                 const data = await response.json();
                 if (data.success) {

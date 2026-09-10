@@ -112,82 +112,68 @@ function sendText(res, statusCode, text, contentType = 'text/plain; charset=utf-
     res.end(buf);
 }
 
-function isPortOpen(port, host, timeoutMs = 500) {
-    return new Promise((resolve) => {
-        const sock = new net.Socket();
-        sock.setTimeout(timeoutMs);
-        sock.on('connect', () => {
-            sock.destroy();
-            resolve(true);
-        });
-        sock.on('error', () => {
-            sock.destroy();
-            resolve(false);
-        });
-        sock.on('timeout', () => {
-            sock.destroy();
-            resolve(false);
-        });
-        try {
-            sock.connect(port, host);
-        } catch (e) {
-            sock.destroy();
-            resolve(false);
-        }
+function waitForVirtctl(child, timeoutMs = 20000) {
+    return new Promise((resolve, reject) => {
+        let stderr = '';
+        let timer = null;
+
+        const onStdout = (data) => {
+            const str = data.toString();
+            // virtctl outputs `{"port":5900}` when the listener is bound and ready
+            if (str.includes('"port"') || str.includes(String(TARGET_PORT))) {
+                cleanup();
+                resolve();
+            }
+        };
+
+        const onStderr = (data) => {
+            stderr += data.toString();
+        };
+
+        const onExit = (code, signal) => {
+            cleanup();
+            reject(new Error(`virtctl exited prematurely with code ${code}.${stderr ? ' Error: ' + stderr.trim() : ''}`));
+        };
+
+        const onError = (err) => {
+            cleanup();
+            reject(new Error(`Failed to spawn virtctl: ${err.message}`));
+        };
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+            if (child.stdout) child.stdout.removeListener('data', onStdout);
+            if (child.stderr) child.stderr.removeListener('data', onStderr);
+            child.removeListener('exit', onExit);
+            child.removeListener('error', onError);
+        };
+
+        timer = setTimeout(() => {
+            cleanup();
+            if (child.exitCode === null) {
+                resolve();
+            } else {
+                reject(new Error(`Timed out waiting for virtctl to start.${stderr ? ' Error: ' + stderr.trim() : ''}`));
+            }
+        }, timeoutMs);
+
+        if (child.stdout) child.stdout.on('data', onStdout);
+        if (child.stderr) child.stderr.on('data', onStderr);
+        child.once('exit', onExit);
+        child.once('error', onError);
     });
 }
 
-function waitForPort(port, host, timeoutMs = 30000, intervalMs = 500, getStderr = () => '') {
-    return new Promise((resolve, reject) => {
-        const startTime = Date.now();
-
-        const check = () => {
-            if (virtctlProcess && virtctlProcess.exitCode !== null && virtctlProcess.exitCode !== 0) {
-                const stderr = getStderr();
-                return reject(new Error(`virtctl process exited with code ${virtctlProcess.exitCode}.${stderr ? ' Error: ' + stderr : ''}`));
-            }
-
-            const socket = new net.Socket();
-            let destroyed = false;
-            const cleanup = () => {
-                if (!destroyed) {
-                    destroyed = true;
-                    socket.destroy();
-                }
-            };
-
-            socket.setTimeout(1000);
-            socket.on('connect', () => {
-                cleanup();
-                resolve();
-            });
-            socket.on('error', () => {
-                cleanup();
-                retry();
-            });
-            socket.on('timeout', () => {
-                cleanup();
-                retry();
-            });
-
-            try {
-                socket.connect(port, host);
-            } catch (err) {
-                cleanup();
-                retry();
-            }
-        };
-
-        const retry = () => {
-            if (Date.now() - startTime >= timeoutMs) {
-                const stderr = getStderr();
-                return reject(new Error(`Timed out after ${timeoutMs / 1000}s waiting for VNC port ${port} to open.${stderr ? ' virtctl error: ' + stderr : ''}`));
-            }
-            setTimeout(check, intervalMs);
-        };
-
-        check();
-    });
+async function isVirtctlRunning() {
+    if (virtctlProcess && virtctlProcess.exitCode === null && !virtctlProcess.killed) {
+        return true;
+    }
+    try {
+        const pids = await execPromise('pgrep -f "virtctl vnc"');
+        return pids.trim().length > 0;
+    } catch {
+        return false;
+    }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -247,9 +233,10 @@ const server = http.createServer(async (req, res) => {
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const { vm, namespace } = JSON.parse(body || '{}');
-                if (!vm || !namespace) {
-                    sendJson(res, 400, { success: false, error: 'Missing vm or namespace' });
+                const { vm, namespace, cluster } = JSON.parse(body || '{}');
+                const resolvedNamespace = namespace || 'vm-workloads';
+                if (!vm) {
+                    sendJson(res, 400, { success: false, error: 'Missing vm parameter' });
                     return;
                 }
 
@@ -259,29 +246,37 @@ const server = http.createServer(async (req, res) => {
                     virtctlProcess = null;
                 }
 
-                const virtctlBin = findVirtctl();
-                console.log(`Starting virtctl vnc using "${virtctlBin}" for ${vm} in ${namespace}...`);
-                virtctlProcess = spawn(virtctlBin, ['vnc', vm, '-n', namespace, '--port', String(TARGET_PORT), '--proxy-only']);
-                currentVM = { vm, namespace };
+                if (cluster) {
+                    try {
+                        const project_id = await getProjectId();
+                        console.log(`Ensuring credentials for cluster ${cluster} in project ${project_id}...`);
+                        await execPromise(`gcloud container fleet memberships get-credentials ${cluster} --project ${project_id} --quiet`);
+                    } catch (e) {
+                        console.warn(`Could not refresh credentials for cluster ${cluster}:`, e);
+                    }
+                }
 
-                let virtctlStderr = '';
+                const virtctlBin = findVirtctl();
+                console.log(`Starting virtctl vnc using "${virtctlBin}" for ${vm} in ${resolvedNamespace}...`);
+                virtctlProcess = spawn(virtctlBin, ['vnc', vm, '-n', resolvedNamespace, '--port', String(TARGET_PORT), '--proxy-only']);
+                currentVM = { vm, namespace: resolvedNamespace };
+
                 virtctlProcess.stdout.on('data', (data) => console.log(`virtctl: ${data}`));
-                virtctlProcess.stderr.on('data', (data) => {
-                    const msg = data.toString();
-                    console.error(`virtctl error: ${msg}`);
-                    virtctlStderr += msg;
-                });
+                virtctlProcess.stderr.on('data', (data) => console.error(`virtctl error: ${data}`));
                 virtctlProcess.on('error', (err) => {
                     console.error(`virtctl failed to spawn: ${err.message}`);
                 });
                 virtctlProcess.on('exit', (code, signal) => {
                     console.log(`virtctl process exited with code ${code}, signal ${signal}`);
+                    if (virtctlProcess && virtctlProcess.exitCode !== null) {
+                        virtctlProcess = null;
+                    }
                 });
 
-                // Wait for the VNC port to actually be open and listening before responding
-                console.log(`Waiting for VNC port ${TARGET_PORT} to become available...`);
-                await waitForPort(TARGET_PORT, TARGET_HOST, 30000, 500, () => virtctlStderr);
-                console.log(`VNC port ${TARGET_PORT} is open and ready.`);
+                // Wait for virtctl to signal it is listening
+                console.log(`Waiting for virtctl to become ready on port ${TARGET_PORT}...`);
+                await waitForVirtctl(virtctlProcess, 20000);
+                console.log(`virtctl is ready on port ${TARGET_PORT}.`);
 
                 sendJson(res, 200, { success: true });
             } catch (err) {
@@ -306,11 +301,10 @@ const server = http.createServer(async (req, res) => {
 
     // API: Get current status
     if (pathname === '/api/status') {
-        const portOpen = await isPortOpen(TARGET_PORT, TARGET_HOST);
-        const isConnected = (!!virtctlProcess && virtctlProcess.exitCode === null) || portOpen;
+        const isConnected = await isVirtctlRunning();
         sendJson(res, 200, { 
             connected: isConnected, 
-            vm: currentVM || (portOpen ? { vm: process.env.VM_NAME || 'active-session', namespace: process.env.NAMESPACE || 'default' } : null)
+            vm: currentVM || (isConnected && process.env.VM_NAME ? { vm: process.env.VM_NAME, namespace: process.env.NAMESPACE || 'default' } : null)
         });
         return;
     }
@@ -361,8 +355,12 @@ server.headersTimeout = 66000;
 const wss = new WebSocket.Server({
     noServer: true,
     handleProtocols: (protocols) => {
-        if (protocols.has('binary')) return 'binary';
-        if (protocols.size > 0) return Array.from(protocols)[0];
+        const hasBinary = protocols instanceof Set 
+            ? protocols.has('binary') 
+            : Array.isArray(protocols) && protocols.includes('binary');
+        if (hasBinary) return 'binary';
+        if (protocols && protocols.size > 0) return Array.from(protocols)[0];
+        if (Array.isArray(protocols) && protocols.length > 0) return protocols[0];
         return false;
     }
 });
